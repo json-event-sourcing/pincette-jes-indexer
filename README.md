@@ -1,6 +1,6 @@
 # JSON Event Sourcing Indexer
 
-This microservice sends messages from Kafka topics to Elasticsearch indices. The topics should use the [serialisation of JSON Event Sourcing](https://www.javadoc.io/static/net.pincette/pincette-jes-util/1.1.1/net/pincette/jes/util/JsonSerde.html). If a message contains the field ```_id``` then this is also used as the identifier in the index. Otherwise a random UUID is generated.
+This microservice sends messages from Kafka topics to Elasticsearch indices. The topics should use the [serialisation of JSON Event Sourcing](https://www.javadoc.io/static/net.pincette/pincette-jes-util/1.1.3/net/pincette/jes/util/JsonSerde.html). If a message contains the field ```_id``` then this is also used as the identifier in the index. Otherwise a random UUID is generated.
 
 ## Configuration
 
@@ -26,10 +26,10 @@ You can run the JVM with the option ```-mx128m```.
 
 ## Docker
 
-Docker images can be found at [https://hub.docker.com/repository/docker/jsoneventsourcing/pincette-jes-indexer](https://hub.docker.com/repository/docker/wdonne/pincette-jes-indexer). You should add a configuration layer with a Docker file that looks like this:
+Docker images can be found at [https://hub.docker.com/repository/docker/jsoneventsourcing/pincette-jes-indexer](https://hub.docker.com/repository/docker/jsoneventsourcing/pincette-jes-indexer). You should add a configuration layer with a Docker file that looks like this:
 
 ```
-FROM registry.hub.docker.com/wdonne/pincette-jes-indexer:<version>
+FROM registry.hub.docker.com/jsoneventsourcing/pincette-jes-indexer:<version>
 COPY conf/tst.conf /conf/application.conf
 ```
 
