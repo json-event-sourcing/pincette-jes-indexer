@@ -18,17 +18,21 @@ import static net.pincette.jes.util.Kafka.createReliableProducer;
 import static net.pincette.jes.util.Kafka.fromConfig;
 import static net.pincette.jes.util.Streams.start;
 import static net.pincette.json.JsonUtil.string;
+import static net.pincette.util.Util.must;
 import static net.pincette.util.Util.tryToDoWithRethrow;
+import static net.pincette.util.Util.tryToGetForever;
+import static net.pincette.util.Util.tryToGetRethrow;
 import static net.pincette.util.Util.tryToGetSilent;
 import static org.asynchttpclient.Dsl.asyncHttpClient;
 
 import com.typesafe.config.Config;
+import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.json.JsonObject;
-import net.pincette.function.SideEffect;
 import net.pincette.jes.util.JsonSerializer;
 import net.pincette.jes.util.Streams;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -51,7 +55,7 @@ public class Indexer {
   private static final String KAFKA = "kafka";
   private static final String LOG_LEVEL = "logLevel";
   private static final String LOG_TOPIC = "logTopic";
-  private static final String VERSION = "1.0.1";
+  private static final String VERSION = "1.0.2";
   private static final AsyncHttpClient client = asyncHttpClient();
 
   private static void connect(
@@ -66,16 +70,16 @@ public class Indexer {
         .filter((k, v) -> !v.getBoolean(DELETED, false))
         .mapValues(
             v ->
-                sendPutMessage(removeMetadata(v), createUri(v, uri), authorizationHeader)
-                    .thenApply(
-                        response ->
-                            response.getStatusCode() < 400
-                                || SideEffect.<Boolean>run(() -> logError(response, logger))
-                                    .andThenGet(() -> false)));
+                sendForever(
+                    () -> sendPutMessage(removeMetadata(v), createUri(v, uri), authorizationHeader),
+                    logger));
 
     stream
         .filter((k, v) -> v.getBoolean(DELETED, false))
-        .mapValues(v -> sendDeleteMessage(createUri(v, uri), authorizationHeader));
+        .mapValues(
+            v ->
+                sendForever(
+                    () -> sendDeleteMessage(createUri(v, uri), authorizationHeader), logger));
   }
 
   private static String createUri(final JsonObject json, final String uri) {
@@ -87,13 +91,17 @@ public class Indexer {
     return uri + (uri.endsWith("/") ? "" : "/") + index + "/_doc/";
   }
 
-  private static void logError(final Response response, final Logger logger) {
-    logger.log(
-        SEVERE,
-        "{0} {1}\n{2}",
-        new Object[] {
-          valueOf(response.getStatusCode()), response.getStatusText(), response.getResponseBody()
-        });
+  private static Response logResponse(final Response response, final Logger logger) {
+    if (response.getStatusCode() >= 400) {
+      logger.log(
+          SEVERE,
+          "{0} {1}\n{2}",
+          new Object[] {
+            valueOf(response.getStatusCode()), response.getStatusText(), response.getResponseBody()
+          });
+    }
+
+    return response;
   }
 
   public static void main(final String[] args) {
@@ -128,7 +136,7 @@ public class Indexer {
         producer -> {
           final Topology topology = builder.build();
 
-          log(logger, logLevel, VERSION, environment, producer, logTopic);
+          log(logger, VERSION, environment, producer, logTopic);
           logger.log(INFO, "Topology:\n\n {0}", topology.describe());
 
           if (!start(topology, Streams.fromConfig(config, KAFKA))) {
@@ -156,6 +164,22 @@ public class Indexer {
   private static CompletionStage<Response> sendDeleteMessage(
       final String uri, final String authorizationHeader) {
     return send(request("DELETE", uri, authorizationHeader));
+  }
+
+  private static boolean sendForever(
+      final Supplier<CompletionStage<Response>> send, final Logger logger) {
+    return tryToGetRethrow(
+            () ->
+                tryToGetForever(
+                        () ->
+                            send.get()
+                                .thenApply(response -> logResponse(response, logger))
+                                .thenApply(response -> must(response, r -> r.getStatusCode() < 400))
+                                .thenApply(response -> true),
+                        Duration.ofSeconds(5))
+                    .toCompletableFuture()
+                    .get())
+        .orElse(false);
   }
 
   private static CompletionStage<Response> sendPutMessage(
