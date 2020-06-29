@@ -7,7 +7,6 @@ import static java.util.logging.Level.INFO;
 import static java.util.logging.Level.SEVERE;
 import static java.util.logging.Level.parse;
 import static java.util.logging.Logger.getLogger;
-import static javax.json.Json.createObjectBuilder;
 import static net.pincette.jes.elastic.Logging.log;
 import static net.pincette.jes.util.Configuration.loadDefault;
 import static net.pincette.jes.util.JsonFields.DELETED;
@@ -17,6 +16,7 @@ import static net.pincette.jes.util.JsonFields.TYPE;
 import static net.pincette.jes.util.Kafka.createReliableProducer;
 import static net.pincette.jes.util.Kafka.fromConfig;
 import static net.pincette.jes.util.Streams.start;
+import static net.pincette.json.JsonUtil.createObjectBuilder;
 import static net.pincette.json.JsonUtil.string;
 import static net.pincette.util.Util.must;
 import static net.pincette.util.Util.tryToDoWithRethrow;
@@ -29,6 +29,7 @@ import com.typesafe.config.Config;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -55,7 +56,7 @@ public class Indexer {
   private static final String KAFKA = "kafka";
   private static final String LOG_LEVEL = "logLevel";
   private static final String LOG_TOPIC = "logTopic";
-  private static final String VERSION = "1.0.2";
+  private static final String VERSION = "1.0.3";
   private static final AsyncHttpClient client = asyncHttpClient();
 
   private static void connect(
@@ -72,6 +73,7 @@ public class Indexer {
             v ->
                 sendForever(
                     () -> sendPutMessage(removeMetadata(v), createUri(v, uri), authorizationHeader),
+                    response -> response.getStatusCode() < 400,
                     logger));
 
     stream
@@ -79,7 +81,9 @@ public class Indexer {
         .mapValues(
             v ->
                 sendForever(
-                    () -> sendDeleteMessage(createUri(v, uri), authorizationHeader), logger));
+                    () -> sendDeleteMessage(createUri(v, uri), authorizationHeader),
+                    response -> response.getStatusCode() < 400 || response.getStatusCode() == 404,
+                    logger));
   }
 
   private static String createUri(final JsonObject json, final String uri) {
@@ -91,8 +95,9 @@ public class Indexer {
     return uri + (uri.endsWith("/") ? "" : "/") + index + "/_doc/";
   }
 
-  private static Response logResponse(final Response response, final Logger logger) {
-    if (response.getStatusCode() >= 400) {
+  private static Response logResponse(
+      final Response response, final Predicate<Response> evaluate, final Logger logger) {
+    if (!evaluate.test(response)) {
       logger.log(
           SEVERE,
           "{0} {1}\n{2}",
@@ -167,14 +172,16 @@ public class Indexer {
   }
 
   private static boolean sendForever(
-      final Supplier<CompletionStage<Response>> send, final Logger logger) {
+      final Supplier<CompletionStage<Response>> send,
+      final Predicate<Response> evaluate,
+      final Logger logger) {
     return tryToGetRethrow(
             () ->
                 tryToGetForever(
                         () ->
                             send.get()
-                                .thenApply(response -> logResponse(response, logger))
-                                .thenApply(response -> must(response, r -> r.getStatusCode() < 400))
+                                .thenApply(response -> logResponse(response, evaluate, logger))
+                                .thenApply(response -> must(response, evaluate))
                                 .thenApply(response -> true),
                         Duration.ofSeconds(5))
                     .toCompletableFuture()
