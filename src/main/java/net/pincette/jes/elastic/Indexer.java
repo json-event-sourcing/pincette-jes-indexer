@@ -36,6 +36,7 @@ import java.util.logging.Logger;
 import javax.json.JsonObject;
 import net.pincette.jes.util.JsonSerializer;
 import net.pincette.jes.util.Streams;
+import net.pincette.jes.util.Streams.TopologyLifeCycleEmitter;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.Topology;
@@ -56,7 +57,8 @@ public class Indexer {
   private static final String KAFKA = "kafka";
   private static final String LOG_LEVEL = "logLevel";
   private static final String LOG_TOPIC = "logTopic";
-  private static final String VERSION = "1.0.3";
+  private static final String TOPOLOGY_TOPIC = "topologyTopic";
+  private static final String VERSION = "1.0.4";
   private static final AsyncHttpClient client = asyncHttpClient();
 
   private static void connect(
@@ -144,7 +146,12 @@ public class Indexer {
           log(logger, VERSION, environment, producer, logTopic);
           logger.log(INFO, "Topology:\n\n {0}", topology.describe());
 
-          if (!start(topology, Streams.fromConfig(config, KAFKA))) {
+          if (!start(
+              topology,
+              Streams.fromConfig(config, KAFKA),
+              tryToGetSilent(() -> config.getString(TOPOLOGY_TOPIC))
+                  .map(topic -> new TopologyLifeCycleEmitter(topic, producer))
+                  .orElse(null))) {
             exit(1);
           }
         });
