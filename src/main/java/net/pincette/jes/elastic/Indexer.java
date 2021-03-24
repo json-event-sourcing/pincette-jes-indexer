@@ -58,7 +58,7 @@ public class Indexer {
   private static final String LOG_LEVEL = "logLevel";
   private static final String LOG_TOPIC = "logTopic";
   private static final String TOPOLOGY_TOPIC = "topologyTopic";
-  private static final String VERSION = "1.0.4";
+  private static final String VERSION = "1.0.5";
   private static final AsyncHttpClient client = asyncHttpClient();
 
   private static void connect(
@@ -70,7 +70,7 @@ public class Indexer {
     final KStream<String, JsonObject> stream = builder.stream(topic);
 
     stream
-        .filter((k, v) -> !v.getBoolean(DELETED, false))
+        .filter((k, v) -> v != null && !v.getBoolean(DELETED, false))
         .mapValues(
             v ->
                 sendForever(
@@ -79,7 +79,7 @@ public class Indexer {
                     logger));
 
     stream
-        .filter((k, v) -> v.getBoolean(DELETED, false))
+        .filter((k, v) -> v != null && v.getBoolean(DELETED, false))
         .mapValues(
             v ->
                 sendForever(
