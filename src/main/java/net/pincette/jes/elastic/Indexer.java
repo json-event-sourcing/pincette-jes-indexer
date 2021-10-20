@@ -1,7 +1,7 @@
 package net.pincette.jes.elastic;
 
 import static java.lang.String.valueOf;
-import static java.lang.System.exit;
+import static java.time.Duration.ofSeconds;
 import static java.util.UUID.randomUUID;
 import static java.util.logging.Level.INFO;
 import static java.util.logging.Level.SEVERE;
@@ -18,6 +18,7 @@ import static net.pincette.jes.util.Kafka.fromConfig;
 import static net.pincette.jes.util.Streams.start;
 import static net.pincette.json.JsonUtil.createObjectBuilder;
 import static net.pincette.json.JsonUtil.string;
+import static net.pincette.util.ScheduledCompletionStage.runAsyncAfter;
 import static net.pincette.util.Util.must;
 import static net.pincette.util.Util.tryToDoWithRethrow;
 import static net.pincette.util.Util.tryToGetForever;
@@ -37,6 +38,7 @@ import javax.json.JsonObject;
 import net.pincette.jes.util.JsonSerializer;
 import net.pincette.jes.util.Streams;
 import net.pincette.jes.util.Streams.TopologyLifeCycleEmitter;
+import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.Topology;
@@ -53,6 +55,7 @@ import org.asynchttpclient.Response;
  * @author Werner Donn\u00e9
  */
 public class Indexer {
+  private static final Duration BACKOFF = ofSeconds(5);
   private static final String ENVIRONMENT = "environment";
   private static final String KAFKA = "kafka";
   private static final String LOG_LEVEL = "logLevel";
@@ -141,19 +144,8 @@ public class Indexer {
             createReliableProducer(
                 fromConfig(config, KAFKA), new StringSerializer(), new JsonSerializer()),
         producer -> {
-          final Topology topology = builder.build();
-
           log(logger, VERSION, environment, producer, logTopic);
-          logger.log(INFO, "Topology:\n\n {0}", topology.describe());
-
-          if (!start(
-              topology,
-              Streams.fromConfig(config, KAFKA),
-              tryToGetSilent(() -> config.getString(TOPOLOGY_TOPIC))
-                  .map(topic -> new TopologyLifeCycleEmitter(topic, producer))
-                  .orElse(null))) {
-            exit(1);
-          }
+          run(builder, config, producer, logger);
         });
   }
 
@@ -167,6 +159,27 @@ public class Indexer {
         .prepare(method, uri)
         .setHeader("Authorization", authorizationHeader)
         .setHeader("Content-Type", "application/json");
+  }
+
+  private static void run(
+      final StreamsBuilder builder,
+      final Config config,
+      final KafkaProducer<String, JsonObject> producer,
+      final Logger logger) {
+    final Runnable again = () -> run(builder, config, producer, logger);
+    final Topology topology = builder.build();
+
+    logger.log(INFO, "Topology:\n\n {0}", topology.describe());
+
+    start(
+        topology,
+        Streams.fromConfig(config, KAFKA),
+        topologyLifeCycleEmitter(config, producer),
+        (stop, app) -> runAsyncAfter(again, BACKOFF),
+        e -> {
+          logger.log(SEVERE, e.getMessage(), e);
+          runAsyncAfter(again, BACKOFF);
+        });
   }
 
   private static CompletionStage<Response> send(final BoundRequestBuilder request) {
@@ -190,7 +203,7 @@ public class Indexer {
                                 .thenApply(response -> logResponse(response, evaluate, logger))
                                 .thenApply(response -> must(response, evaluate))
                                 .thenApply(response -> true),
-                        Duration.ofSeconds(5))
+                        BACKOFF)
                     .toCompletableFuture()
                     .get())
         .orElse(false);
@@ -199,5 +212,12 @@ public class Indexer {
   private static CompletionStage<Response> sendPutMessage(
       final JsonObject json, final String uri, final String authorizationHeader) {
     return send(request("PUT", uri, authorizationHeader).setBody(string(json)));
+  }
+
+  private static TopologyLifeCycleEmitter topologyLifeCycleEmitter(
+      final Config config, final KafkaProducer<String, JsonObject> producer) {
+    return tryToGetSilent(() -> config.getString(TOPOLOGY_TOPIC))
+        .map(topic -> new TopologyLifeCycleEmitter(topic, producer))
+        .orElse(null);
   }
 }
